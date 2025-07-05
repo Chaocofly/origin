@@ -57,6 +57,10 @@ class PLCWorker(QThread):
                         # 合并所有数据
                         all_data = {**v_data, **vd_data, **vb_data}
                         self.data_updated.emit(all_data)
+
+
+
+
                         time.sleep(self.refresh_interval)  # 用可调的刷新间隔
                     except Exception as e:
                         self.error_occurred.emit(f"读取错误: {str(e)}")

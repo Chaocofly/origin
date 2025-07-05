@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt, QDate
 from TOOL.License import LicenseManager
 
 
+
 class LicenseGenerator(QMainWindow):
     def __init__(self):
         super().__init__()
