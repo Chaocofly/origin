@@ -1,5 +1,7 @@
 # license_manager.py
 import os
+import re
+import subprocess
 import sys
 import hashlib
 import uuid
@@ -13,6 +15,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox, QPushButton, QHBoxLayout, QApplication, QFileDialog, QDialog, QVBoxLayout, \
     QLabel, QGroupBox
 
+import winreg
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QMessageBox, QPushButton, QHBoxLayout, QApplication, QFileDialog, QDialog, QVBoxLayout, \
+    QLabel, QGroupBox
 
 class LicenseManager:
     def __init__(self, app_name="智控小匠智能交互管控系统"):
@@ -20,22 +27,266 @@ class LicenseManager:
         self.license_file = "license.lic"
         self.valid_machine_id = None
         self.license_data = {}
+        self.machine_id_cache_file = "machine_id.cache"
 
     def get_machine_id(self):
-        """生成基于系统硬件的唯一机器ID"""
-        # 获取系统信息组合
-        system_info = {
-            "platform": platform.platform(),
-            "processor": platform.processor(),
-            "hostname": socket.gethostname(),
-            "username": getpass.getuser(),
-            "mac": ':'.join(['{:02x}'.format((uuid.getnode() >> elements) & 0xff)
-                             for elements in range(0, 2 * 6, 2)][::-1])
-        }
+        """生成基于系统硬件的稳定机器ID"""
+        # 先尝试从缓存读取
+        if os.path.exists(self.machine_id_cache_file):
+            try:
+                with open(self.machine_id_cache_file, 'r') as f:
+                    cached_id = f.read().strip()
+                    if cached_id:
+                        return cached_id
+            except:
+                pass  # 缓存读取失败，继续生成
+
+        # 获取稳定的硬件标识符
+        hardware_id = self._get_stable_hardware_id()
 
         # 创建唯一哈希
-        unique_string = json.dumps(system_info, sort_keys=True)
-        return hashlib.sha256(unique_string.encode()).hexdigest()
+        unique_string = json.dumps(hardware_id, sort_keys=True)
+        machine_id = hashlib.sha256(unique_string.encode()).hexdigest()
+
+        # 保存到缓存
+        try:
+            with open(self.machine_id_cache_file, 'w') as f:
+                f.write(machine_id)
+        except:
+            pass
+
+        return machine_id
+
+    def _get_stable_hardware_id(self):
+        """获取稳定的硬件标识符"""
+        sys_info = {
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+        }
+
+        # 1. 尝试获取磁盘序列号 (最稳定)
+        disk_id = self._get_disk_serial()
+        if disk_id:
+            sys_info["disk_id"] = disk_id
+
+        # 2. 尝试获取主板序列号
+        board_id = self._get_board_serial()
+        if board_id:
+            sys_info["board_id"] = board_id
+
+        # 3. 尝试获取CPU ID
+        cpu_id = self._get_cpu_id()
+        if cpu_id:
+            sys_info["cpu_id"] = cpu_id
+
+        # 4. 如果以上都失败，使用MAC地址作为备选
+        if not disk_id and not board_id and not cpu_id:
+            sys_info["mac"] = self._get_mac_address()
+
+        return sys_info
+
+    def _get_disk_serial(self):
+        """获取系统盘序列号 (最稳定的标识符)"""
+        try:
+            if platform.system() == 'Windows':
+                # Windows - 使用WMI获取磁盘序列号
+                try:
+                    import wmi
+                    c = wmi.WMI()
+                    for disk in c.Win32_DiskDrive():
+                        if disk.DeviceID == "\\\\.\\PHYSICALDRIVE0":
+                            return disk.SerialNumber.strip()
+                except:
+                    # 回退到注册表方法
+                    try:
+                        key = winreg.OpenKey(
+                            winreg.HKEY_LOCAL_MACHINE,
+                            r"SYSTEM\CurrentControlSet\Services\Disk\Enum"
+                        )
+                        serial = winreg.QueryValueEx(key, "0")[0]
+                        winreg.CloseKey(key)
+                        return serial
+                    except:
+                        pass
+
+                # 使用命令行工具作为备选
+                try:
+                    result = subprocess.check_output(
+                        "wmic diskdrive get serialnumber",
+                        shell=True,
+                        stderr=subprocess.DEVNULL
+                    ).decode()
+                    lines = result.split('\n')
+                    for line in lines:
+                        if line.strip() and not line.startswith('SerialNumber'):
+                            return line.strip()
+                except:
+                    pass
+
+            elif platform.system() == 'Linux':
+                # Linux - 获取根分区设备ID
+                try:
+                    result = subprocess.check_output(
+                        "lsblk -no UUID / 2>/dev/null || sudo blkid -s UUID -o value $(df / | tail -1 | awk '{print $1}')",
+                        shell=True
+                    ).decode().strip()
+                    if result:
+                        return result
+                except:
+                    pass
+
+                # 备选方案：获取文件系统UUID
+                try:
+                    with open('/etc/fstab', 'r') as f:
+                        for line in f:
+                            if '/ ' in line:
+                                parts = line.split()
+                                for part in parts:
+                                    if 'UUID=' in part:
+                                        return part.split('=')[1].strip('"')
+                except:
+                    pass
+
+            elif platform.system() == 'Darwin':  # macOS
+                # macOS - 获取磁盘UUID
+                try:
+                    result = subprocess.check_output(
+                        "diskutil info / | grep 'Volume UUID' | awk '{print $3}'",
+                        shell=True
+                    ).decode().strip()
+                    if result:
+                        return result
+                except:
+                    pass
+
+        except Exception:
+            pass
+
+        return None
+
+    def _get_board_serial(self):
+        """获取主板序列号"""
+        try:
+            if platform.system() == 'Windows':
+                # Windows
+                try:
+                    import wmi
+                    c = wmi.WMI()
+                    board = c.Win32_BaseBoard()[0]
+                    return board.SerialNumber.strip()
+                except:
+                    # 回退到命令行
+                    try:
+                        result = subprocess.check_output(
+                            "wmic baseboard get serialnumber",
+                            shell=True,
+                            stderr=subprocess.DEVNULL
+                        ).decode()
+                        lines = result.split('\n')
+                        for line in lines:
+                            if line.strip() and not line.startswith('SerialNumber'):
+                                return line.strip()
+                    except:
+                        pass
+
+            elif platform.system() == 'Linux':
+                # Linux
+                try:
+                    # 尝试DMI
+                    with open('/sys/class/dmi/id/board_serial', 'r') as f:
+                        serial = f.read().strip()
+                        if serial and serial != "None":
+                            return serial
+                except:
+                    pass
+
+                # 备选方案：dmidecode
+                try:
+                    result = subprocess.check_output(
+                        "sudo dmidecode -s baseboard-serial-number 2>/dev/null",
+                        shell=True
+                    ).decode().strip()
+                    if result and " " not in result:
+                        return result
+                except:
+                    pass
+
+            elif platform.system() == 'Darwin':  # macOS
+                # macOS
+                try:
+                    result = subprocess.check_output(
+                        "ioreg -l | grep IOPlatformSerialNumber | awk '{print $4}' | sed 's/\"//g'",
+                        shell=True
+                    ).decode().strip()
+                    if result:
+                        return result
+                except:
+                    pass
+
+        except Exception:
+            pass
+
+        return None
+
+    def _get_cpu_id(self):
+        """获取CPU ID"""
+        try:
+            if platform.system() == 'Windows':
+                # Windows
+                try:
+                    result = subprocess.check_output(
+                        "wmic cpu get processorid",
+                        shell=True,
+                        stderr=subprocess.DEVNULL
+                    ).decode()
+                    lines = result.split('\n')
+                    for line in lines:
+                        if line.strip() and not line.startswith('ProcessorId'):
+                            return line.strip()
+                except:
+                    pass
+
+            elif platform.system() == 'Linux':
+                # Linux
+                try:
+                    # 从/proc/cpuinfo获取
+                    with open('/proc/cpuinfo', 'r') as f:
+                        data = f.read()
+                        matches = re.findall(r'processor\s*:\s*\d+', data)
+                        if matches:
+                            return hashlib.md5(data.encode()).hexdigest()
+                except:
+                    pass
+
+            elif platform.system() == 'Darwin':  # macOS
+                # macOS
+                try:
+                    result = subprocess.check_output(
+                        "sysctl -n machdep.cpu.brand_string",
+                        shell=True
+                    ).decode().strip()
+                    if result:
+                        return hashlib.md5(result.encode()).hexdigest()
+                except:
+                    pass
+
+        except Exception:
+            pass
+
+        return None
+
+    def _get_mac_address(self):
+        """获取MAC地址 (备选方案)"""
+        try:
+            # 获取第一个非本地回环的MAC地址
+            mac = uuid.getnode()
+            if (mac >> 40) % 2 == 0:  # 确保不是多播地址
+                return ':'.join(['{:02x}'.format((mac >> elements) & 0xff)
+                                 for elements in range(0, 8 * 6, 8)][::-1])
+        except:
+            pass
+        return ""
+
 
     def validate_license(self):
         """验证许可证有效性并返回结果"""
