@@ -6,9 +6,9 @@ import struct
 from PySide6.QtWidgets import (QApplication, QMainWindow, QTableWidget, QTableWidgetItem,
                                QPushButton, QStatusBar, QVBoxLayout, QWidget, QHeaderView,
                                QTabWidget, QLabel, QGridLayout, QGroupBox, QHBoxLayout, QLineEdit, QInputDialog,
-                               QMessageBox)
+                               QMessageBox, QMenu)
 from PySide6.QtCore import QThread, Signal, Qt
-from PySide6.QtGui import QColor, QBrush, QFont, QIcon
+from PySide6.QtGui import QColor, QBrush, QFont, QIcon, QAction
 from PySide6.QtWidgets import QComboBox
 from PySide6.QtCore import QSettings
 from TOOL.Tool import ToolManager, ToolManagementTab
@@ -18,6 +18,8 @@ from TOOL.Contorl import  ControlPanelTab
 from TOOL.Tool2 import ToolManager2, ToolManagementTab2
 from TOOL.Woring import AlarmLogger, AlarmHistoryDialog
 import TOOL.icon
+from TOOL.License import LicenseManager
+import datetime
 
 class PLCWorker(QThread):
     data_updated = Signal(dict)
@@ -359,6 +361,7 @@ class RobotDataTable(QTableWidget):
 class PLCStatusWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.license_manager = license_manager
         self.settings = QSettings("MyCompany", "PLCMonitorApp")
         self.setWindowTitle("智控小匠只能交互管控系统")
         self.setGeometry(100, 100, 1200, 800)
@@ -516,6 +519,7 @@ class PLCStatusWindow(QMainWindow):
         """)
         main_layout.addWidget(title_label)
 
+
         # 创建状态栏
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -671,8 +675,56 @@ class PLCStatusWindow(QMainWindow):
 
         self.history_button = QPushButton("查询历史报警")
         self.history_button.clicked.connect(self.show_alarm_history_dialog)
-
         button_layout.addWidget(self.history_button)
+
+        self.help_dropdown_menu = QMenu(self)
+        self.help_dropdown_menu.setStyleSheet("""
+            QMenu {
+                background-color: #2c3e50;
+                color: white;
+                border: 1px solid #34495e;
+                padding: 5px;
+            }
+            QMenu::item {
+                background-color: #2c3e50;
+                color: white;
+                padding: 6px 20px;
+            }
+            QMenu::item:selected {
+                background-color: #34495e;
+            }
+        """)
+        about_action = QAction("关于", self)
+        about_action.triggered.connect(self.show_about)
+        self.help_dropdown_menu.addAction(about_action)
+
+        license_action = QAction("许可证信息", self)
+        license_action.triggered.connect(self.show_license_info)
+        self.help_dropdown_menu.addAction(license_action)
+
+        self.help_button = QPushButton("帮助")
+        self.help_button.setFixedHeight(35)
+        self.help_button.setStyleSheet("""
+            QPushButton {
+                font-size: 16px; 
+                font-weight: bold;
+                background-color: #2c3e50;
+                color: white;
+                border-radius: 5px;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #34495e;
+            }
+        """)
+        self.help_button.clicked.connect(
+            lambda: self.help_dropdown_menu.exec(
+                self.help_button.mapToGlobal(self.help_button.rect().bottomLeft())
+            )
+        )
+        button_layout.addWidget(self.help_button)
+
+
 
 
 
@@ -1082,8 +1134,43 @@ class PLCStatusWindow(QMainWindow):
         dlg = AlarmHistoryDialog(self.alarm_logger, self)
         dlg.exec()
 
+
+    # 添加新方法
+    def show_about(self):
+        now_year = datetime.datetime.now().year
+        about_text = (
+            "智控小匠智能交互管控系统\n\n"
+            "版本: 1.0.0\n"
+            f"版权所有 © {now_year} 智控小匠\n\n"
+            "此软件用于工业自动化控制系统监控。"
+        )
+        QMessageBox.about(self, "关于", about_text)
+
+
+    def show_license_info(self):
+        # 获取许可证信息
+        license_info = self.license_manager.get_license_info()
+
+        # 构建信息文本
+        info_text = "许可证信息:\n\n"
+        for key, value in license_info.items():
+            info_text += f"{key}: {value}\n"
+
+        QMessageBox.information(self, "许可证信息", info_text)
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
+    # 添加许可证验证
+    license_manager = LicenseManager("智控小匠智能交互管控系统")
+    # 验证许可证
+    if not license_manager.validate_license():
+        # 验证失败会显示错误对话框，用户可选择获取机器码或导入许可证
+        # 如果用户未选择导入有效许可证，程序会退出
+        sys.exit(1)
+
+    # 获取许可证信息（可选，用于显示在关于页面）
+    license_info = license_manager.get_license_info()
 
     # 设置应用样式
     app.setStyle("Fusion")
